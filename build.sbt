@@ -23,6 +23,7 @@ ThisBuild / scmInfo := Some(
     url("https://github.com/typelevel/cats-effect-shell"),
     "git@github.com:typelevel/cats-effect-shell.git"))
 
+ThisBuild / scalacOptions += "-source:future"
 
 lazy val root = project
   .in(file("."))
