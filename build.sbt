@@ -13,7 +13,8 @@ ThisBuild / developers := List(
     "mpilquist",
     "Michael Pilquist",
     "mpilquist@gmail.com",
-    url("https://github.com/mpilquist")),
+    url("https://github.com/mpilquist")
+  )
 )
 
 ThisBuild / homepage := Some(url("https://github.com/typelevel/cats-effect-shell"))
@@ -21,13 +22,14 @@ ThisBuild / homepage := Some(url("https://github.com/typelevel/cats-effect-shell
 ThisBuild / scmInfo := Some(
   ScmInfo(
     url("https://github.com/typelevel/cats-effect-shell"),
-    "git@github.com:typelevel/cats-effect-shell.git"))
+    "git@github.com:typelevel/cats-effect-shell.git"
+  )
+)
 
 ThisBuild / scalacOptions += "-source:future"
 
 lazy val root = project
   .in(file("."))
   .settings(
-    name := "cats-effect-shell",
+    name := "cats-effect-shell"
   )
-
