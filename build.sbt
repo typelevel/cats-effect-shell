@@ -31,5 +31,9 @@ ThisBuild / scalacOptions += "-source:future"
 lazy val root = project
   .in(file("."))
   .settings(
-    name := "cats-effect-shell"
+    name := "cats-effect-shell",
+    libraryDependencies ++= Seq(
+      "org.typelevel" %% "cats-effect" % "3.5.1",
+      "com.olvind.tui" %% "tui" % "0.0.7"
+    )
   )
