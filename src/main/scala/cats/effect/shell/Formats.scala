@@ -35,7 +35,6 @@ object Formats:
     val secondsStr = if seconds > 0 then Some(s"${seconds}s") else None
     List(daysStr, hoursStr, minutesStr, secondsStr).flatten.mkString(" ")
 
-
   def giga(value: Long): String = f"${value / 1_000_000_000.0}%.2f"
 
   def vmDescriptor(vmd: VirtualMachineDescriptor): String =
