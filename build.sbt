@@ -26,6 +26,7 @@ ThisBuild / scmInfo := Some(
   )
 )
 
+ThisBuild / githubWorkflowJavaVersions := Seq(JavaSpec.temurin("17"))
 ThisBuild / scalacOptions += "-source:future"
 
 lazy val root = project
