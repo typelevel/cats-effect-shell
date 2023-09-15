@@ -27,29 +27,46 @@ import cats.effect.std.Dispatcher
 object Main extends IOApp:
 
   enum ConnectionState:
-    case Connecting(override val connectionId: String, var jmx: Option[Jmx], var cancel: () => Future[Unit])
+    case Connecting(
+        override val connectionId: String,
+        var jmx: Option[Jmx],
+        var cancel: () => Future[Unit]
+    )
     case Connected(jmx: Jmx)
     case Disconnected(override val connectionId: String)
     def connectionId: String = this match
       case Connecting(connectionId, _, _) => connectionId
-      case Connected(jmx) => jmx.connectionId
-      case Disconnected(connectionId) => connectionId
+      case Connected(jmx)                 => jmx.connectionId
+      case Disconnected(connectionId)     => connectionId
 
-  def unsafeStartConnect(connectionId: String, j: IO[Jmx], dispatcher: Dispatcher[IO]): ConnectionState =
-    val state: ConnectionState.Connecting = ConnectionState.Connecting(connectionId, None, () => Future.unit)
+  def unsafeStartConnect(
+      connectionId: String,
+      j: IO[Jmx],
+      dispatcher: Dispatcher[IO]
+  ): ConnectionState =
+    val state: ConnectionState.Connecting =
+      ConnectionState.Connecting(connectionId, None, () => Future.unit)
     val cancel = dispatcher.unsafeRunCancelable(j.map(jmx => state.jmx = Some(jmx)))
     state.cancel = cancel
     state
 
   def run(args: List[String]) =
-    Dispatcher.parallel[IO].use: dispatcher =>
-      val vmid = args.headOption
-      val cnxState = vmid.map: connectionId =>
-        val jmx = Jmx.connectByVmId(connectionId)
-        unsafeStartConnect(connectionId, jmx, dispatcher)
-      IO(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher))).as(ExitCode.Success)
+    Dispatcher
+      .parallel[IO]
+      .use: dispatcher =>
+        val vmid = args.headOption
+        val cnxState = vmid.map: connectionId =>
+          val jmx = Jmx.connectByVmId(connectionId)
+          unsafeStartConnect(connectionId, jmx, dispatcher)
+        IO(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher)))
+          .as(ExitCode.Success)
 
-  def run(terminal: Terminal, jni: CrosstermJni, optCnxState: Option[ConnectionState], dispatcher: Dispatcher[IO]): Unit =
+  def run(
+      terminal: Terminal,
+      jni: CrosstermJni,
+      optCnxState: Option[ConnectionState],
+      dispatcher: Dispatcher[IO]
+  ): Unit =
     optCnxState match
       case Some(cnxState) =>
         val shouldExit = runMonitoringProcess(terminal, jni, cnxState)
@@ -70,7 +87,11 @@ object Main extends IOApp:
       list.setItems(Jmx.localProcesses.toArray)
       lastRefresh = System.currentTimeMillis()
 
-  def runSelect(terminal: Terminal, jni: CrosstermJni, dispatcher: Dispatcher[IO]): Option[ConnectionState] =
+  def runSelect(
+      terminal: Terminal,
+      jni: CrosstermJni,
+      dispatcher: Dispatcher[IO]
+  ): Option[ConnectionState] =
     var done = false
     var result: Option[ConnectionState] = None
     val state = ProcessSelectionState(StatefulList.fromItems(Array.empty), 0L)
@@ -90,7 +111,8 @@ object Main extends IOApp:
                 state.list.selectedItem match
                   case Some(vmd) =>
                     done = true
-                    val connection = unsafeStartConnect(vmd.id(), Jmx.connectByDescriptor(vmd), dispatcher)
+                    val connection =
+                      unsafeStartConnect(vmd.id(), Jmx.connectByDescriptor(vmd), dispatcher)
                     result = Some(connection)
                   case None => ()
               case _ => ()
@@ -107,7 +129,9 @@ object Main extends IOApp:
       chunks(0)
     )
     val items =
-      state.list.items.map(vmd => ListWidget.Item(Text.from(Span.nostyle(Formats.vmDescriptor(vmd)))))
+      state.list.items.map(vmd =>
+        ListWidget.Item(Text.from(Span.nostyle(Formats.vmDescriptor(vmd))))
+      )
     val processes = ListWidget(
       block = Some(BlockWidget(title = Some(Spans.nostyle("Processes")), borders = Borders.ALL)),
       items = items,
@@ -116,18 +140,23 @@ object Main extends IOApp:
     )
     f.renderStatefulWidget(processes, chunks(1))(state.list.state)
 
-  def runMonitoringProcess(terminal: Terminal, jni: CrosstermJni, cnxState0: ConnectionState): Boolean =
+  def runMonitoringProcess(
+      terminal: Terminal,
+      jni: CrosstermJni,
+      cnxState0: ConnectionState
+  ): Boolean =
     var done = false
     var shouldExit = false
     var cnxState = cnxState0
     while !done do
       cnxState = cnxState match
         case ConnectionState.Connecting(_, Some(jmx), _) => ConnectionState.Connected(jmx)
-        case _ => cnxState
+        case _                                           => cnxState
 
-      terminal.draw(f => cnxState match
-        case cnx: ConnectionState.Connected => uiConnected(f, cnx.jmx)
-        case _ => uiDisconnected(f, cnxState)
+      terminal.draw(f =>
+        cnxState match
+          case cnx: ConnectionState.Connected => uiConnected(f, cnx.jmx)
+          case _                              => uiDisconnected(f, cnxState)
       )
       val polled = jni.poll(Duration(1L, 0))
       if polled then
@@ -139,7 +168,7 @@ object Main extends IOApp:
               case char: KeyCode.Char if char.c() == 'd' =>
                 cnxState match
                   case ConnectionState.Connecting(_, _, cancel) => cancel()
-                  case _ => ()
+                  case _                                        => ()
                 done = true
               case _ => ()
           case _ => ()
@@ -147,8 +176,8 @@ object Main extends IOApp:
 
   def uiDisconnected(f: Frame, cnxState: ConnectionState): Unit =
     val cnxStateLabel = cnxState match
-      case _: ConnectionState.Connecting => "CONNECTING"
-      case _: ConnectionState.Connected => "CONNECTED"
+      case _: ConnectionState.Connecting   => "CONNECTING"
+      case _: ConnectionState.Connected    => "CONNECTED"
       case _: ConnectionState.Disconnected => "DISCONNECTED"
     val bold = Style.DEFAULT.addModifier(Modifier.BOLD)
     val summary = ListWidget(
