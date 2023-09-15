@@ -16,6 +16,7 @@
 
 package cats.effect.shell
 
+import cats.effect.IO
 import com.sun.tools.attach.*
 import java.lang.management.{
   ManagementFactory,
@@ -42,12 +43,11 @@ case class Jmx(connection: Option[JMXConnector], mbeanServer: MBeanServerConnect
   def threadInfos = thread.getThreadInfo(thread.getAllThreadIds())
 
 object Jmx:
-  def connectByDescriptor(vmd: VirtualMachineDescriptor): Jmx =
-    try connectByVmId(vmd.id())
-    catch
+  def connectByDescriptor(vmd: VirtualMachineDescriptor): IO[Jmx] =
+    connectByVmId(vmd.id()).recover:
       case t: IOException if t.getMessage().contains("Can not attach to current VM") => connectSelf
 
-  def connectByVmId(vmid: String): Jmx =
+  def connectByVmId(vmid: String): IO[Jmx] = IO.interruptible:
     val vm = VirtualMachine.attach(vmid)
     val jmxUrl = JMXServiceURL(vm.startLocalManagementAgent())
     val jmxCnx = JMXConnectorFactory.connect(jmxUrl)

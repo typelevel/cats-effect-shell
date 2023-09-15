@@ -16,141 +16,191 @@
 
 package cats.effect.shell
 
+import scala.concurrent.Future
+import cats.effect.{IO, IOApp, ExitCode}
 import tui.*
 import tui.crossterm.{CrosstermJni, Duration, Event, KeyCode}
 import tui.widgets.*
 import scala.concurrent.duration.*
+import cats.effect.std.Dispatcher
 
-@main def catsEffectShell(args: String*) =
-  val vmid = args.headOption
-  val jmx = vmid.map(Jmx.connectByVmId)
-  withTerminal((jni, terminal) => run(terminal, jni, jmx))
+object Main extends IOApp:
 
-def run(terminal: Terminal, jni: CrosstermJni, jmx: Option[Jmx]): Unit =
-  jmx match
-    case Some(jmx) =>
-      val shouldExit = runMonitoringProcess(terminal, jni, jmx)
-      if shouldExit then () else run(terminal, jni, None)
-    case None =>
-      runSelect(terminal, jni) match
-        case jmx @ Some(_) => run(terminal, jni, jmx)
-        case None          => ()
+  enum ConnectionState:
+    case Connecting(override val connectionId: String, var jmx: Option[Jmx], var cancel: () => Future[Unit])
+    case Connected(jmx: Jmx)
+    case Disconnected(override val connectionId: String)
+    def connectionId: String = this match
+      case Connecting(connectionId, _, _) => connectionId
+      case Connected(jmx) => jmx.connectionId
+      case Disconnected(connectionId) => connectionId
 
-case class ProcessSelectionState(
-    list: StatefulList[com.sun.tools.attach.VirtualMachineDescriptor],
-    var lastRefresh: Long
-):
-  def possiblyRefresh(): Unit =
-    if (lastRefresh - System.currentTimeMillis()).abs > 1000L then refresh()
+  def unsafeStartConnect(connectionId: String, j: IO[Jmx], dispatcher: Dispatcher[IO]): ConnectionState =
+    val state: ConnectionState.Connecting = ConnectionState.Connecting(connectionId, None, () => Future.unit)
+    val cancel = dispatcher.unsafeRunCancelable(j.map(jmx => state.jmx = Some(jmx)))
+    state.cancel = cancel
+    state
 
-  def refresh(): Unit =
-    list.setItems(Jmx.localProcesses.toArray)
-    lastRefresh = System.currentTimeMillis()
+  def run(args: List[String]) =
+    Dispatcher.parallel[IO].use: dispatcher =>
+      val vmid = args.headOption
+      val cnxState = vmid.map: connectionId =>
+        val jmx = Jmx.connectByVmId(connectionId)
+        unsafeStartConnect(connectionId, jmx, dispatcher)
+      IO(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher))).as(ExitCode.Success)
 
-def runSelect(terminal: Terminal, jni: CrosstermJni): Option[Jmx] =
-  var done = false
-  var result: Option[Jmx] = None
-  val state = ProcessSelectionState(StatefulList.fromItems(Array.empty), 0L)
-  while !done do
-    state.possiblyRefresh()
-    terminal.draw(f => uiSelect(f, state))
-    val polled = jni.poll(Duration(1L, 0))
-    if polled then
-      jni.read() match
-        case key: Event.Key =>
-          key.keyEvent.code match
-            case char: KeyCode.Char if char.c() == 'q' =>
-              done = true
-            case char: KeyCode.Down => state.list.next()
-            case char: KeyCode.Up   => state.list.previous()
-            case char: KeyCode.Enter =>
-              state.list.selectedItem match
-                case Some(vmd) =>
-                  done = true
-                  result = Some(Jmx.connectByDescriptor(vmd))
-                case None => ()
-            case _ => ()
-        case _ => ()
-  result
+  def run(terminal: Terminal, jni: CrosstermJni, optCnxState: Option[ConnectionState], dispatcher: Dispatcher[IO]): Unit =
+    optCnxState match
+      case Some(cnxState) =>
+        val shouldExit = runMonitoringProcess(terminal, jni, cnxState)
+        if shouldExit then () else run(terminal, jni, None, dispatcher)
+      case None =>
+        runSelect(terminal, jni, dispatcher) match
+          case cnxState @ Some(_) => run(terminal, jni, cnxState, dispatcher)
+          case None               => ()
 
-def uiSelect(f: Frame, state: ProcessSelectionState): Unit =
-  val chunks = Layout(
-    direction = Direction.Vertical,
-    constraints = Array(Constraint.Min(1), Constraint.Percentage(100))
-  ).split(f.size)
-  f.renderWidget(
-    ParagraphWidget(Text.from(Span.nostyle("Select a process to monitor:"))),
-    chunks(0)
-  )
-  val items =
-    state.list.items.map(vmd => ListWidget.Item(Text.from(Span.nostyle(Formats.vmDescriptor(vmd)))))
-  val processes = ListWidget(
-    block = Some(BlockWidget(title = Some(Spans.nostyle("Processes")), borders = Borders.ALL)),
-    items = items,
-    highlightSymbol = Some(">> "),
-    highlightStyle = Style.DEFAULT.addModifier(Modifier.BOLD)
-  )
-  f.renderStatefulWidget(processes, chunks(1))(state.list.state)
+  case class ProcessSelectionState(
+      list: StatefulList[com.sun.tools.attach.VirtualMachineDescriptor],
+      var lastRefresh: Long
+  ):
+    def possiblyRefresh(): Unit =
+      if (lastRefresh - System.currentTimeMillis()).abs > 1000L then refresh()
 
-def runMonitoringProcess(terminal: Terminal, jni: CrosstermJni, jmx: Jmx): Boolean =
-  var done = false
-  var shouldExit = false
-  while !done do
-    terminal.draw(f => uiConnected(f, jmx))
-    val polled = jni.poll(Duration(1L, 0))
-    if polled then
-      jni.read() match
-        case key: Event.Key =>
-          key.keyEvent.code match
-            case char: KeyCode.Char if char.c() == 'q' =>
-              done = true; shouldExit = true
-            case char: KeyCode.Char if char.c() == 'd' =>
-              done = true
-            case _ => ()
-        case _ => ()
-  shouldExit
+    def refresh(): Unit =
+      list.setItems(Jmx.localProcesses.toArray)
+      lastRefresh = System.currentTimeMillis()
 
-def uiConnected(f: Frame, jmx: Jmx): Unit =
-  val chunks = Layout(
-    direction = Direction.Vertical,
-    constraints = Array(Constraint.Min(3), Constraint.Percentage(100))
-  ).split(f.size)
+  def runSelect(terminal: Terminal, jni: CrosstermJni, dispatcher: Dispatcher[IO]): Option[ConnectionState] =
+    var done = false
+    var result: Option[ConnectionState] = None
+    val state = ProcessSelectionState(StatefulList.fromItems(Array.empty), 0L)
+    while !done do
+      state.possiblyRefresh()
+      terminal.draw(f => uiSelect(f, state))
+      val polled = jni.poll(Duration(1L, 0))
+      if polled then
+        jni.read() match
+          case key: Event.Key =>
+            key.keyEvent.code match
+              case char: KeyCode.Char if char.c() == 'q' =>
+                done = true
+              case char: KeyCode.Down => state.list.next()
+              case char: KeyCode.Up   => state.list.previous()
+              case char: KeyCode.Enter =>
+                state.list.selectedItem match
+                  case Some(vmd) =>
+                    done = true
+                    val connection = unsafeStartConnect(vmd.id(), Jmx.connectByDescriptor(vmd), dispatcher)
+                    result = Some(connection)
+                  case None => ()
+              case _ => ()
+          case _ => ()
+    result
 
-  val bold = Style.DEFAULT.addModifier(Modifier.BOLD)
-  val heap = jmx.memory.getHeapMemoryUsage()
-  val heapPercentage = (heap.getUsed() / heap.getMax().toDouble) * 100
+  def uiSelect(f: Frame, state: ProcessSelectionState): Unit =
+    val chunks = Layout(
+      direction = Direction.Vertical,
+      constraints = Array(Constraint.Min(1), Constraint.Percentage(100))
+    ).split(f.size)
+    f.renderWidget(
+      ParagraphWidget(Text.from(Span.nostyle("Select a process to monitor:"))),
+      chunks(0)
+    )
+    val items =
+      state.list.items.map(vmd => ListWidget.Item(Text.from(Span.nostyle(Formats.vmDescriptor(vmd)))))
+    val processes = ListWidget(
+      block = Some(BlockWidget(title = Some(Spans.nostyle("Processes")), borders = Borders.ALL)),
+      items = items,
+      highlightSymbol = Some(">> "),
+      highlightStyle = Style.DEFAULT.addModifier(Modifier.BOLD)
+    )
+    f.renderStatefulWidget(processes, chunks(1))(state.list.state)
 
-  val summary = ListWidget(
-    items = Array(
-      ListWidget.Item(
-        Text.from(Span.nostyle(jmx.connectionId), Span.styled(" (CONNECTED)", bold))
-      ),
-      ListWidget.Item(
-        Text.from(
-          Span.styled("Uptime: ", bold),
-          Span.nostyle(Formats.durationToDaysThroughSeconds(jmx.runtime.getUptime().millis))
+  def runMonitoringProcess(terminal: Terminal, jni: CrosstermJni, cnxState0: ConnectionState): Boolean =
+    var done = false
+    var shouldExit = false
+    var cnxState = cnxState0
+    while !done do
+      cnxState = cnxState match
+        case ConnectionState.Connecting(_, Some(jmx), _) => ConnectionState.Connected(jmx)
+        case _ => cnxState
+
+      terminal.draw(f => cnxState match
+        case cnx: ConnectionState.Connected => uiConnected(f, cnx.jmx)
+        case _ => uiDisconnected(f, cnxState)
+      )
+      val polled = jni.poll(Duration(1L, 0))
+      if polled then
+        jni.read() match
+          case key: Event.Key =>
+            key.keyEvent.code match
+              case char: KeyCode.Char if char.c() == 'q' =>
+                done = true; shouldExit = true
+              case char: KeyCode.Char if char.c() == 'd' =>
+                cnxState match
+                  case ConnectionState.Connecting(_, _, cancel) => cancel()
+                  case _ => ()
+                done = true
+              case _ => ()
+          case _ => ()
+    shouldExit
+
+  def uiDisconnected(f: Frame, cnxState: ConnectionState): Unit =
+    val cnxStateLabel = cnxState match
+      case _: ConnectionState.Connecting => "CONNECTING"
+      case _: ConnectionState.Connected => "CONNECTED"
+      case _: ConnectionState.Disconnected => "DISCONNECTED"
+    val bold = Style.DEFAULT.addModifier(Modifier.BOLD)
+    val summary = ListWidget(
+      items = Array(
+        ListWidget.Item(
+          Text.from(Span.nostyle(cnxState.connectionId), Span.styled(s" ($cnxStateLabel)", bold))
         )
-      ),
-      ListWidget.Item(
-        Text.from(
-          Span.styled("Heap: ", bold),
-          Span.nostyle(
-            s"${heapPercentage.toInt}% (${Formats.giga(heap.getUsed)}GB / ${Formats.giga(heap.getMax)}GB)"
+      )
+    )
+    f.renderWidget(summary, f.size)
+
+  def uiConnected(f: Frame, jmx: Jmx): Unit =
+    val chunks = Layout(
+      direction = Direction.Vertical,
+      constraints = Array(Constraint.Min(3), Constraint.Percentage(100))
+    ).split(f.size)
+
+    val bold = Style.DEFAULT.addModifier(Modifier.BOLD)
+    val heap = jmx.memory.getHeapMemoryUsage()
+    val heapPercentage = (heap.getUsed() / heap.getMax().toDouble) * 100
+
+    val summary = ListWidget(
+      items = Array(
+        ListWidget.Item(
+          Text.from(Span.nostyle(jmx.connectionId), Span.styled(" (CONNECTED)", bold))
+        ),
+        ListWidget.Item(
+          Text.from(
+            Span.styled("Uptime: ", bold),
+            Span.nostyle(Formats.durationToDaysThroughSeconds(jmx.runtime.getUptime().millis))
+          )
+        ),
+        ListWidget.Item(
+          Text.from(
+            Span.styled("Heap: ", bold),
+            Span.nostyle(
+              s"${heapPercentage.toInt}% (${Formats.giga(heap.getUsed)}GB / ${Formats.giga(heap.getMax)}GB)"
+            )
           )
         )
       )
     )
-  )
-  f.renderWidget(summary, chunks(0))
+    f.renderWidget(summary, chunks(0))
 
-  val threads = ListWidget(
-    block = Some(BlockWidget(title = Some(Spans.nostyle("Threads")), borders = Borders.ALL)),
-    items = jmx.threadInfos.map(ti =>
-      ListWidget.Item(
-        Text.from(
-          Span.nostyle(s"[${ti.getThreadId()}] ${ti.getThreadName} (${ti.getThreadState()})")
+    val threads = ListWidget(
+      block = Some(BlockWidget(title = Some(Spans.nostyle("Threads")), borders = Borders.ALL)),
+      items = jmx.threadInfos.map(ti =>
+        ListWidget.Item(
+          Text.from(
+            Span.nostyle(s"[${ti.getThreadId()}] ${ti.getThreadName} (${ti.getThreadState()})")
+          )
         )
       )
     )
-  )
-  f.renderWidget(threads, chunks(1))
+    f.renderWidget(threads, chunks(1))
