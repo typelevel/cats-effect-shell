@@ -35,6 +35,7 @@ lazy val root = project
     name := "cats-effect-shell",
     libraryDependencies ++= Seq(
       "org.typelevel" %% "cats-effect" % "3.5.1",
+      "co.fs2" %% "fs2-core" % "3.9.2",
       "com.olvind.tui" %% "tui" % "0.0.7"
     )
   )

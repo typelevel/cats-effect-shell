@@ -35,6 +35,7 @@ import java.rmi.server.RMISocketFactory
 import java.net.{Socket, ServerSocket, InetSocketAddress}
 import javax.management.remote.rmi.RMIConnectorServer
 import java.rmi.server.RMIClientSocketFactory
+import java.rmi.server.RMIServerSocketFactory
 
 case class Jmx(connection: Option[JMXConnector], mbeanServer: MBeanServerConnection):
   def connectionId: String = connection.map(_.getConnectionId()).getOrElse("self")
@@ -59,20 +60,25 @@ object Jmx:
     val vm = VirtualMachine.attach(vmid)
     val jmxUrl = JMXServiceURL(vm.startLocalManagementAgent())
     vm.detach()
-    val duration = 5.seconds
-    val csf = new RMIClientSocketFactory {
-      override def createSocket(host: String, port: Int): Socket =
-        val socket = new Socket()
-        socket.setSoTimeout(duration.toMillis.toInt)
-        socket.connect(new InetSocketAddress(host, port), duration.toMillis.toInt)
-        socket
-    }
-    val env = Map(RMIConnectorServer.RMI_CLIENT_SOCKET_FACTORY_ATTRIBUTE -> csf)
-    val jmxCnx = JMXConnectorFactory.connect(jmxUrl, env.asJava)
+    attemptConfigureRMISocketTimeouts()
+    val jmxCnx = JMXConnectorFactory.connect(jmxUrl)
     val mbeanServer = jmxCnx.getMBeanServerConnection()
     Jmx(Some(jmxCnx), mbeanServer)
 
   def connectSelf: Jmx =
     Jmx(None, ManagementFactory.getPlatformMBeanServer())
 
+  private def attemptConfigureRMISocketTimeouts(): Unit =
+    val duration = 5.seconds
+    try
+      RMISocketFactory.setSocketFactory(new RMISocketFactory:
+        def createServerSocket(port: Int): ServerSocket =
+          new ServerSocket(port)
+        def createSocket(host: String, port: Int): Socket =
+          val socket = new Socket()
+          socket.setSoTimeout(duration.toMillis.toInt)
+          socket.connect(new InetSocketAddress(host, port), duration.toMillis.toInt)
+          socket
+      )
+    catch case _: IOException => ()
   def localProcesses: List[VirtualMachineDescriptor] = VirtualMachine.list().asScala.toList
