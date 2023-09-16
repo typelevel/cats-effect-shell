@@ -16,6 +16,9 @@
 
 package cats.effect.shell
 
+import scala.concurrent.duration.*
+import scala.jdk.CollectionConverters.*
+
 import cats.effect.IO
 import com.sun.tools.attach.*
 import java.lang.management.{
@@ -27,8 +30,11 @@ import java.lang.management.{
 }
 import javax.management.MBeanServerConnection
 import javax.management.remote.{JMXConnector, JMXConnectorFactory, JMXServiceURL}
-import scala.jdk.CollectionConverters.*
 import java.io.IOException
+import java.rmi.server.RMISocketFactory
+import java.net.{Socket, ServerSocket, InetSocketAddress}
+import javax.management.remote.rmi.RMIConnectorServer
+import java.rmi.server.RMIClientSocketFactory
 
 case class Jmx(connection: Option[JMXConnector], mbeanServer: MBeanServerConnection):
   def connectionId: String = connection.map(_.getConnectionId()).getOrElse("self")
@@ -40,17 +46,29 @@ case class Jmx(connection: Option[JMXConnector], mbeanServer: MBeanServerConnect
   lazy val runtime: RuntimeMXBean = proxy[RuntimeMXBean]
   lazy val thread: ThreadMXBean = proxy[ThreadMXBean]
 
-  def threadInfos = thread.getThreadInfo(thread.getAllThreadIds())
+  def threadInfos = thread.getThreadInfo(thread.getAllThreadIds()).filterNot(_ == null)
+
+  def disconnect(): Unit = connection.foreach(_.close())
 
 object Jmx:
   def connectByDescriptor(vmd: VirtualMachineDescriptor): IO[Jmx] =
     connectByVmId(vmd.id()).recover:
       case t: IOException if t.getMessage().contains("Can not attach to current VM") => connectSelf
 
-  def connectByVmId(vmid: String): IO[Jmx] = IO.interruptible:
+  def connectByVmId(vmid: String): IO[Jmx] = IO.interruptibleMany:
     val vm = VirtualMachine.attach(vmid)
     val jmxUrl = JMXServiceURL(vm.startLocalManagementAgent())
-    val jmxCnx = JMXConnectorFactory.connect(jmxUrl)
+    vm.detach()
+    val duration = 5.seconds
+    val csf = new RMIClientSocketFactory {
+      override def createSocket(host: String, port: Int): Socket =
+        val socket = new Socket()
+        socket.setSoTimeout(duration.toMillis.toInt)
+        socket.connect(new InetSocketAddress(host, port), duration.toMillis.toInt)
+        socket
+    }
+    val env = Map(RMIConnectorServer.RMI_CLIENT_SOCKET_FACTORY_ATTRIBUTE -> csf)
+    val jmxCnx = JMXConnectorFactory.connect(jmxUrl, env.asJava)
     val mbeanServer = jmxCnx.getMBeanServerConnection()
     Jmx(Some(jmxCnx), mbeanServer)
 

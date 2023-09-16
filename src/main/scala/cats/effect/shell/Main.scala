@@ -26,40 +26,17 @@ import cats.effect.std.Dispatcher
 
 object Main extends IOApp:
 
-  enum ConnectionState:
-    case Connecting(
-        override val connectionId: String,
-        var jmx: Option[Jmx],
-        var cancel: () => Future[Unit]
-    )
-    case Connected(jmx: Jmx)
-    case Disconnected(override val connectionId: String)
-    def connectionId: String = this match
-      case Connecting(connectionId, _, _) => connectionId
-      case Connected(jmx)                 => jmx.connectionId
-      case Disconnected(connectionId)     => connectionId
-
-  def unsafeStartConnect(
-      connectionId: String,
-      j: IO[Jmx],
-      dispatcher: Dispatcher[IO]
-  ): ConnectionState =
-    val state: ConnectionState.Connecting =
-      ConnectionState.Connecting(connectionId, None, () => Future.unit)
-    val cancel = dispatcher.unsafeRunCancelable(j.map(jmx => state.jmx = Some(jmx)))
-    state.cancel = cancel
-    state
-
   def run(args: List[String]) =
     Dispatcher
       .parallel[IO]
       .use: dispatcher =>
-        val vmid = args.headOption
-        val cnxState = vmid.map: connectionId =>
-          val jmx = Jmx.connectByVmId(connectionId)
-          unsafeStartConnect(connectionId, jmx, dispatcher)
-        IO(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher)))
-          .as(ExitCode.Success)
+        IO:
+          val vmid = args.headOption
+          vmid.map: connectionId =>
+            val jmx = Jmx.connectByVmId(connectionId)
+            ConnectionState.unsafeStartConnect(connectionId, jmx, dispatcher)
+        .flatMap: cnxState =>
+          IO(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher))).as(ExitCode.Success)
 
   def run(
       terminal: Terminal,
@@ -112,7 +89,7 @@ object Main extends IOApp:
                   case Some(vmd) =>
                     done = true
                     val connection =
-                      unsafeStartConnect(vmd.id(), Jmx.connectByDescriptor(vmd), dispatcher)
+                      ConnectionState.unsafeStartConnect(vmd.id(), Jmx.connectByDescriptor(vmd), dispatcher)
                     result = Some(connection)
                   case None => ()
               case _ => ()
@@ -158,7 +135,7 @@ object Main extends IOApp:
           case cnx: ConnectionState.Connected => uiConnected(f, cnx.jmx)
           case _                              => uiDisconnected(f, cnxState)
       )
-      val polled = jni.poll(Duration(1L, 0))
+      val polled = jni.poll(Duration(0L, 100_000_000))
       if polled then
         jni.read() match
           case key: Event.Key =>
@@ -168,6 +145,7 @@ object Main extends IOApp:
               case char: KeyCode.Char if char.c() == 'd' =>
                 cnxState match
                   case ConnectionState.Connecting(_, _, cancel) => cancel()
+                  case ConnectionState.Connected(jmx) => jmx.disconnect()
                   case _                                        => ()
                 done = true
               case _ => ()
@@ -175,15 +153,15 @@ object Main extends IOApp:
     shouldExit
 
   def uiDisconnected(f: Frame, cnxState: ConnectionState): Unit =
-    val cnxStateLabel = cnxState match
-      case _: ConnectionState.Connecting   => "CONNECTING"
-      case _: ConnectionState.Connected    => "CONNECTED"
-      case _: ConnectionState.Disconnected => "DISCONNECTED"
     val bold = Style.DEFAULT.addModifier(Modifier.BOLD)
+    val cnxStateSpan = cnxState match
+      case _: ConnectionState.Connecting   => Span.styled(s" (CONNECTING)", bold.fg(Color.Cyan))
+      case _: ConnectionState.Connected    => Span.styled(s" (CONNECTED)", bold.fg(Color.Green))
+      case _: ConnectionState.Disconnected => Span.styled(s" (DISCONNECTED)", bold.fg(Color.DarkGray))
     val summary = ListWidget(
       items = Array(
         ListWidget.Item(
-          Text.from(Span.nostyle(cnxState.connectionId), Span.styled(s" ($cnxStateLabel)", bold))
+          Text.from(Span.nostyle(cnxState.connectionId), cnxStateSpan)
         )
       )
     )
@@ -202,7 +180,7 @@ object Main extends IOApp:
     val summary = ListWidget(
       items = Array(
         ListWidget.Item(
-          Text.from(Span.nostyle(jmx.connectionId), Span.styled(" (CONNECTED)", bold))
+          Text.from(Span.nostyle(jmx.connectionId), Span.styled(" (CONNECTED)", bold.fg(Color.Green)))
         ),
         ListWidget.Item(
           Text.from(
