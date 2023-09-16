@@ -36,7 +36,8 @@ object Main extends IOApp:
             val jmx = Jmx.connectByVmId(connectionId)
             ConnectionState.unsafeStartConnect(connectionId, jmx, dispatcher)
         .flatMap: cnxState =>
-          IO(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher))).as(ExitCode.Success)
+          IO(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher)))
+            .as(ExitCode.Success)
 
   def run(
       terminal: Terminal,
@@ -89,7 +90,11 @@ object Main extends IOApp:
                   case Some(vmd) =>
                     done = true
                     val connection =
-                      ConnectionState.unsafeStartConnect(vmd.id(), Jmx.connectByDescriptor(vmd), dispatcher)
+                      ConnectionState.unsafeStartConnect(
+                        vmd.id(),
+                        Jmx.connectByDescriptor(vmd),
+                        dispatcher
+                      )
                     result = Some(connection)
                   case None => ()
               case _ => ()
@@ -145,7 +150,7 @@ object Main extends IOApp:
               case char: KeyCode.Char if char.c() == 'd' =>
                 cnxState match
                   case ConnectionState.Connecting(_, _, cancel) => cancel()
-                  case ConnectionState.Connected(jmx) => jmx.disconnect()
+                  case ConnectionState.Connected(jmx)           => jmx.disconnect()
                   case _                                        => ()
                 done = true
               case _ => ()
@@ -155,9 +160,10 @@ object Main extends IOApp:
   def uiDisconnected(f: Frame, cnxState: ConnectionState): Unit =
     val bold = Style.DEFAULT.addModifier(Modifier.BOLD)
     val cnxStateSpan = cnxState match
-      case _: ConnectionState.Connecting   => Span.styled(s" (CONNECTING)", bold.fg(Color.Cyan))
-      case _: ConnectionState.Connected    => Span.styled(s" (CONNECTED)", bold.fg(Color.Green))
-      case _: ConnectionState.Disconnected => Span.styled(s" (DISCONNECTED)", bold.fg(Color.DarkGray))
+      case _: ConnectionState.Connecting => Span.styled(s" (CONNECTING)", bold.fg(Color.Cyan))
+      case _: ConnectionState.Connected  => Span.styled(s" (CONNECTED)", bold.fg(Color.Green))
+      case _: ConnectionState.Disconnected =>
+        Span.styled(s" (DISCONNECTED)", bold.fg(Color.DarkGray))
     val summary = ListWidget(
       items = Array(
         ListWidget.Item(
@@ -180,7 +186,8 @@ object Main extends IOApp:
     val summary = ListWidget(
       items = Array(
         ListWidget.Item(
-          Text.from(Span.nostyle(jmx.connectionId), Span.styled(" (CONNECTED)", bold.fg(Color.Green)))
+          Text
+            .from(Span.nostyle(jmx.connectionId), Span.styled(" (CONNECTED)", bold.fg(Color.Green)))
         ),
         ListWidget.Item(
           Text.from(
