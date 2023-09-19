@@ -26,6 +26,7 @@ import java.lang.management.{
   MemoryMXBean,
   RuntimeMXBean,
   PlatformManagedObject,
+  ThreadInfo,
   ThreadMXBean
 }
 import javax.management.MBeanServerConnection
@@ -33,9 +34,6 @@ import javax.management.remote.{JMXConnector, JMXConnectorFactory, JMXServiceURL
 import java.io.IOException
 import java.rmi.server.RMISocketFactory
 import java.net.{Socket, ServerSocket, InetSocketAddress}
-import javax.management.remote.rmi.RMIConnectorServer
-import java.rmi.server.RMIClientSocketFactory
-import java.rmi.server.RMIServerSocketFactory
 
 case class Jmx(connection: Option[JMXConnector], mbeanServer: MBeanServerConnection):
   def connectionId: String = connection.map(_.getConnectionId()).getOrElse("self")
@@ -47,7 +45,8 @@ case class Jmx(connection: Option[JMXConnector], mbeanServer: MBeanServerConnect
   lazy val runtime: RuntimeMXBean = proxy[RuntimeMXBean]
   lazy val thread: ThreadMXBean = proxy[ThreadMXBean]
 
-  def threadInfos = thread.getThreadInfo(thread.getAllThreadIds()).filterNot(_ == null)
+  def threadInfos: Array[ThreadInfo] =
+    thread.getThreadInfo(thread.getAllThreadIds()).filterNot(_ == null)
 
   def disconnect(): Unit = connection.foreach(_.close())
 

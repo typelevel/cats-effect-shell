@@ -23,16 +23,16 @@ import cats.effect.std.Dispatcher
 enum ConnectionState:
   case Connecting(
       override val connectionId: String,
-      var jmx: Option[Jmx],
+      var connection: Option[Either[Throwable, Jmx]],
       var cancel: () => Future[Unit]
   )
   case Connected(jmx: Jmx)
-  case Disconnected(override val connectionId: String)
+  case Disconnected(override val connectionId: String, error: Option[Throwable])
 
   def connectionId: String = this match
     case Connecting(connectionId, _, _) => connectionId
     case Connected(jmx)                 => jmx.connectionId
-    case Disconnected(connectionId)     => connectionId
+    case Disconnected(connectionId, _)  => connectionId
 
 object ConnectionState:
   def unsafeStartConnect(
@@ -42,6 +42,7 @@ object ConnectionState:
   ): ConnectionState =
     val state: ConnectionState.Connecting =
       ConnectionState.Connecting(connectionId, None, () => Future.unit)
-    val cancel = dispatcher.unsafeRunCancelable(j.map(jmx => state.jmx = Some(jmx)))
+    val cancel = dispatcher.unsafeRunCancelable(j.attempt.map: cnx =>
+      state.connection = Some(cnx))
     state.cancel = cancel
     state

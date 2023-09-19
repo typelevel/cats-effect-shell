@@ -24,6 +24,7 @@ import tui.crossterm.{CrosstermJni, Duration, Event, KeyCode}
 import tui.widgets.*
 import scala.concurrent.duration.*
 import cats.effect.std.Dispatcher
+import java.lang.management.ThreadInfo
 
 object Main extends IOApp:
 
@@ -144,6 +145,18 @@ object Main extends IOApp:
     )
     f.renderStatefulWidget(processes, chunks(1))(state.list.state)
 
+  case class ProcessMonitoringState(
+      jmx: Jmx,
+      list: StatefulList[ThreadInfo],
+      var lastRefresh: Long
+  ):
+    def possiblyRefresh(): Unit =
+      if (lastRefresh - System.currentTimeMillis()).abs > 1000L then refresh()
+
+    def refresh(): Unit =
+      list.setItems(jmx.threadInfos)
+      lastRefresh = System.currentTimeMillis()
+
   def runMonitoringProcess(
       terminal: Terminal,
       jni: CrosstermJni,
@@ -152,14 +165,23 @@ object Main extends IOApp:
     var done = false
     var shouldExit = false
     var cnxState = cnxState0
+    var monitoringState: ProcessMonitoringState = null
     while !done do
       cnxState = cnxState match
-        case ConnectionState.Connecting(_, Some(jmx), _) => ConnectionState.Connected(jmx)
-        case _                                           => cnxState
+        case ConnectionState.Connecting(_, Some(Right(jmx)), _) => ConnectionState.Connected(jmx)
+        case ConnectionState.Connecting(id, Some(Left(err)), _) =>
+          ConnectionState.Disconnected(id, Some(err))
+        case _ => cnxState
+      if monitoringState eq null then
+        cnxState match
+          case ConnectionState.Connected(jmx) =>
+            monitoringState = ProcessMonitoringState(jmx, StatefulList.fromItems(Array.empty), 0L)
+          case _ => ()
+      else monitoringState.possiblyRefresh()
 
       terminal.draw(f =>
         cnxState match
-          case cnx: ConnectionState.Connected => uiConnected(f, cnx.jmx)
+          case cnx: ConnectionState.Connected => uiConnected(f, cnx.jmx, monitoringState)
           case _                              => uiDisconnected(f, cnxState)
       )
       val polled = jni.poll(Duration(0L, 100_000_000))
@@ -183,19 +205,26 @@ object Main extends IOApp:
     val cnxStateSpan = cnxState match
       case _: ConnectionState.Connecting => Span.styled(s" (CONNECTING)", Bold.fg(Color.Cyan))
       case _: ConnectionState.Connected  => Span.styled(s" (CONNECTED)", Bold.fg(Color.Green))
-      case _: ConnectionState.Disconnected =>
-        Span.styled(s" (DISCONNECTED)", Bold.fg(Color.DarkGray))
+      case ConnectionState.Disconnected(_, err) =>
+        Span.styled(
+          s" (DISCONNECTED)",
+          Bold.fg(if err.isDefined then Color.Red else Color.DarkGray)
+        )
+    val err = cnxState match
+      case ConnectionState.Disconnected(_, Some(err)) => err.getMessage()
+      case _                                          => ""
     val summary = ListWidget(
       items = Array(
         ListWidget.Item(
           Text.from(Span.nostyle("Connection: "), Span.nostyle(cnxState.connectionId), cnxStateSpan)
         ),
-        ListWidget.Item(controlsText("d" -> "disconnect", "q" -> "quit"))
+        ListWidget.Item(controlsText("d" -> "disconnect", "q" -> "quit")),
+        ListWidget.Item(Text.from(Span.styled(err, Style.DEFAULT.fg(Color.Red))))
       )
     )
     f.renderWidget(summary, f.size)
 
-  def uiConnected(f: Frame, jmx: Jmx): Unit =
+  def uiConnected(f: Frame, jmx: Jmx, state: ProcessMonitoringState): Unit =
     val chunks = Layout(
       direction = Direction.Vertical,
       constraints = Array(Constraint.Min(4), Constraint.Percentage(100))
@@ -235,7 +264,7 @@ object Main extends IOApp:
 
     val threads = ListWidget(
       block = Some(BlockWidget(title = Some(Spans.nostyle("Threads")), borders = Borders.ALL)),
-      items = jmx.threadInfos.map(ti =>
+      items = state.list.items.map(ti =>
         ListWidget.Item(
           Text.from(
             Span.nostyle(s"[${ti.getThreadId()}] ${ti.getThreadName} (${ti.getThreadState()})")
@@ -243,4 +272,4 @@ object Main extends IOApp:
         )
       )
     )
-    f.renderWidget(threads, chunks(1))
+    f.renderStatefulWidget(threads, chunks(1))(state.list.state)
