@@ -17,10 +17,10 @@
 package cats.effect.shell
 
 import scala.concurrent.Future
-import cats.effect.{IO, IOApp, ExitCode}
+import cats.effect.{IO, IOApp, ExitCode, Resource}
 import fs2.{Stream, Chunk}
 import tui.*
-import tui.crossterm.{CrosstermJni, Duration, Event, KeyCode}
+import tui.crossterm.{Command, CrosstermJni, Duration, Event, KeyCode}
 import tui.widgets.*
 import scala.concurrent.duration.*
 import cats.effect.std.Dispatcher
@@ -38,23 +38,43 @@ object Main extends IOApp:
             val jmx = Jmx.connectByVmId(connectionId)
             ConnectionState.unsafeStartConnect(connectionId, jmx, dispatcher)
         .flatMap: cnxState =>
-            IO.blocking(withTerminal((jni, terminal) => run(terminal, jni, cnxState, dispatcher)))
-              .as(ExitCode.Success)
+          crosstermJni.use: jni =>
+            terminal(jni).use: terminal =>
+                runDisplayLoop(jni, terminal, cnxState, dispatcher).as(ExitCode.Success)
 
-  def run(
-      terminal: Terminal,
+  def crosstermJni: Resource[IO, CrosstermJni] =
+    Resource.apply:
+      IO.blocking:
+        // From tui's withTerminal
+        val jni = new CrosstermJni
+        jni.enableRawMode()
+        jni.execute(new Command.EnterAlternateScreen(), new Command.EnableMouseCapture())
+        val cleanup = IO.blocking:
+          jni.disableRawMode()
+          jni.execute(new Command.LeaveAlternateScreen(), new Command.DisableMouseCapture())
+        (jni, cleanup)
+
+  def terminal(jni: CrosstermJni): Resource[IO, Terminal] =
+    Resource.apply:
+      IO.blocking:
+        val backend = new CrosstermBackend(jni)
+        val cleanup = IO.blocking(backend.showCursor())
+        (Terminal.init(backend), cleanup)
+
+  def runDisplayLoop(
       jni: CrosstermJni,
+      terminal: Terminal,
       optCnxState: Option[ConnectionState],
       dispatcher: Dispatcher[IO]
-  ): Unit =
+  ): IO[Unit] =
     optCnxState match
       case Some(cnxState) =>
-        val shouldExit = runMonitoringProcess(terminal, jni, cnxState)
-        if shouldExit then () else run(terminal, jni, None, dispatcher)
+        val shouldExit = runMonitoringProcess(jni, terminal, cnxState)
+        if shouldExit then IO.unit else runDisplayLoop(jni, terminal, None, dispatcher)
       case None =>
-        runSelect(terminal, jni, dispatcher) match
-          case cnxState @ Some(_) => run(terminal, jni, cnxState, dispatcher)
-          case None               => ()
+        runSelect(jni, terminal, dispatcher) match
+          case cnxState @ Some(_) => runDisplayLoop(jni, terminal, cnxState, dispatcher)
+          case None               => IO.unit
 
   case class ProcessSelectionState(
       list: StatefulList[com.sun.tools.attach.VirtualMachineDescriptor],
@@ -68,8 +88,8 @@ object Main extends IOApp:
       lastRefresh = System.currentTimeMillis()
 
   def runSelect(
-      terminal: Terminal,
       jni: CrosstermJni,
+      terminal: Terminal,
       dispatcher: Dispatcher[IO]
   ): Option[ConnectionState] =
     var done = false
@@ -158,8 +178,8 @@ object Main extends IOApp:
       lastRefresh = System.currentTimeMillis()
 
   def runMonitoringProcess(
-      terminal: Terminal,
       jni: CrosstermJni,
+      terminal: Terminal,
       cnxState0: ConnectionState
   ): Boolean =
     var done = false
