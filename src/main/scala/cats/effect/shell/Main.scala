@@ -16,7 +16,6 @@
 
 package cats.effect.shell
 
-import scala.concurrent.Future
 import cats.effect.{IO, IOApp, ExitCode, Resource}
 import cats.syntax.all.*
 import fs2.{Stream, Chunk}
