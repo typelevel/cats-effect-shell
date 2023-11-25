@@ -35,10 +35,16 @@ enum ConnectionState:
     case Disconnected(connectionId, _)  => connectionId
 
 object ConnectionState:
+
+  def apply(dispatcher: Dispatcher[IO], connectionId: String): IO[ConnectionState] =
+    IO.blocking:
+      val jmx = Jmx.connectByVmId(connectionId)
+      ConnectionState.unsafeStartConnect(dispatcher, connectionId, jmx)
+
   def unsafeStartConnect(
+      dispatcher: Dispatcher[IO],
       connectionId: String,
-      j: IO[Jmx],
-      dispatcher: Dispatcher[IO]
+      j: IO[Jmx]
   ): ConnectionState =
     val state: ConnectionState.Connecting =
       ConnectionState.Connecting(connectionId, None, () => Future.unit)

@@ -18,6 +18,7 @@ package cats.effect.shell
 
 import scala.concurrent.Future
 import cats.effect.{IO, IOApp, ExitCode, Resource}
+import cats.syntax.all.*
 import fs2.{Stream, Chunk}
 import tui.*
 import tui.crossterm.{Command, CrosstermJni, Duration, Event, KeyCode}
@@ -29,18 +30,14 @@ import java.lang.management.ThreadInfo
 object Main extends IOApp:
 
   def run(args: List[String]) =
-    Dispatcher
-      .parallel[IO]
-      .use: dispatcher =>
-        IO.blocking:
-          val vmid = args.headOption
-          vmid.map: connectionId =>
-            val jmx = Jmx.connectByVmId(connectionId)
-            ConnectionState.unsafeStartConnect(connectionId, jmx, dispatcher)
-        .flatMap: cnxState =>
-            crosstermJni.use: jni =>
-              terminal(jni).use: terminal =>
-                runDisplayLoop(jni, terminal, cnxState, dispatcher).as(ExitCode.Success)
+    val prg = for
+      dispatcher <- Dispatcher.parallel[IO]
+      cnxState <- args.headOption.traverse(vmid => Resource.eval(ConnectionState(dispatcher, vmid)))
+      jni <- crosstermJni
+      terminal <- terminal(jni)
+      result <- Resource.eval(runDisplayLoop(jni, terminal, cnxState, dispatcher))
+    yield result
+    prg.use_.as(ExitCode.Success)
 
   def crosstermJni: Resource[IO, CrosstermJni] =
     Resource.apply:
@@ -117,9 +114,9 @@ object Main extends IOApp:
                     done = true
                     val connection =
                       ConnectionState.unsafeStartConnect(
+                        dispatcher,
                         vmd.id(),
-                        Jmx.connectByDescriptor(vmd),
-                        dispatcher
+                        Jmx.connectByDescriptor(vmd)
                       )
                     result = Some(connection)
                   case None => ()
