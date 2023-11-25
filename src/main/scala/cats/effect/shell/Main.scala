@@ -38,8 +38,8 @@ object Main extends IOApp:
             val jmx = Jmx.connectByVmId(connectionId)
             ConnectionState.unsafeStartConnect(connectionId, jmx, dispatcher)
         .flatMap: cnxState =>
-          crosstermJni.use: jni =>
-            terminal(jni).use: terminal =>
+            crosstermJni.use: jni =>
+              terminal(jni).use: terminal =>
                 runDisplayLoop(jni, terminal, cnxState, dispatcher).as(ExitCode.Success)
 
   def crosstermJni: Resource[IO, CrosstermJni] =
