@@ -5,6 +5,7 @@ ThisBuild / scalaVersion := "3.3.1"
 ThisBuild / organization := "org.typelevel"
 ThisBuild / organizationName := "Typelevel"
 ThisBuild / tlSonatypeUseLegacyHost := false
+ThisBuild / tlJdkRelease := None
 
 ThisBuild / startYear := Some(2023)
 
