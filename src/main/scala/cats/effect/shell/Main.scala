@@ -22,6 +22,7 @@ import fs2.{Stream, Chunk}
 import tui.*
 import tui.crossterm.{Command, CrosstermJni, Duration, Event, KeyCode}
 import tui.widgets.*
+import tui.widgets.tabs.TabsWidget
 import scala.concurrent.duration.*
 import cats.effect.std.Dispatcher
 import java.lang.management.ThreadInfo
@@ -161,16 +162,20 @@ object Main extends IOApp:
     )
     f.renderStatefulWidget(processes, chunks(1))(state.list.state)
 
+  enum ProcessMonitoringTab:
+    case Threads, Fibers
+
   case class ProcessMonitoringState(
       jmx: Jmx,
-      list: StatefulList[ThreadInfo],
+      activeTab: ProcessMonitoringTab,
+      threads: StatefulList[ThreadInfo],
       var lastRefresh: Long
   ):
     def possiblyRefresh(): Unit =
       if (lastRefresh - System.currentTimeMillis()).abs > 1000L then refresh()
 
     def refresh(): Unit =
-      list.setItems(jmx.threadInfos)
+      threads.setItems(jmx.threadInfos)
       lastRefresh = System.currentTimeMillis()
 
   def runMonitoringProcess(
@@ -191,7 +196,12 @@ object Main extends IOApp:
       if monitoringState eq null then
         cnxState match
           case ConnectionState.Connected(jmx) =>
-            monitoringState = ProcessMonitoringState(jmx, StatefulList.fromItems(Array.empty), 0L)
+            monitoringState = ProcessMonitoringState(
+              jmx,
+              ProcessMonitoringTab.Threads,
+              StatefulList.fromItems(Array.empty),
+              0L
+            )
           case _ => ()
       else monitoringState.possiblyRefresh()
 
@@ -213,6 +223,14 @@ object Main extends IOApp:
                   case ConnectionState.Connected(jmx)           => jmx.disconnect()
                   case _                                        => ()
                 done = true
+              case char: KeyCode.Char if char.c() >= '1' && char.c() <= '9' =>
+                cnxState match
+                  case ConnectionState.Connected(_) =>
+                    val ordinal = char.c().toInt - '0' - 1
+                    if ordinal >= 0 && ordinal < ProcessMonitoringTab.values.length then
+                      val newSelection = ProcessMonitoringTab.values(ordinal)
+                      monitoringState = monitoringState.copy(activeTab = newSelection)
+                  case _ => ()
               case _ => ()
           case _ => ()
     shouldExit
@@ -243,7 +261,7 @@ object Main extends IOApp:
   def uiConnected(f: Frame, jmx: Jmx, state: ProcessMonitoringState): Unit =
     val chunks = Layout(
       direction = Direction.Vertical,
-      constraints = Array(Constraint.Min(4), Constraint.Percentage(100))
+      constraints = Array(Constraint.Min(4), Constraint.Length(3), Constraint.Percentage(100))
     ).split(f.size)
 
     val heap = jmx.memory.getHeapMemoryUsage()
@@ -278,14 +296,60 @@ object Main extends IOApp:
     )
     f.renderWidget(summary, chunks(0))
 
-    val threads = ListWidget(
-      block = Some(BlockWidget(title = Some(Spans.nostyle("Threads")), borders = Borders.ALL)),
-      items = state.list.items.map(ti =>
-        ListWidget.Item(
-          Text.from(
-            Span.nostyle(s"[${ti.getThreadId()}] ${ti.getThreadName} (${ti.getThreadState()})")
+    val titles = ProcessMonitoringTab.values.map(v => Spans.nostyle(s"${v} [${v.ordinal + 1}]"))
+    val tabs = TabsWidget(
+      titles = titles,
+      block = Some(BlockWidget(borders = Borders.NONE, title = Some(Spans.nostyle("")))),
+      selected = state.activeTab.ordinal,
+      highlightStyle = Style(addModifier = Modifier.BOLD, bg = Some(Color.Black))
+    )
+    f.renderWidget(tabs, chunks(1))
+
+    state.activeTab match
+      case ProcessMonitoringTab.Threads =>
+        val threads = ListWidget(
+          block = Some(BlockWidget(title = Some(Spans.nostyle("Threads")), borders = Borders.ALL)),
+          items = state.threads.items.map(ti =>
+            ListWidget.Item(
+              Text.from(
+                Span.nostyle(s"[${ti.getThreadId()}] ${ti.getThreadName} (${ti.getThreadState()})")
+              )
+            )
           )
         )
-      )
-    )
-    f.renderStatefulWidget(threads, chunks(1))(state.list.state)
+        f.renderStatefulWidget(threads, chunks(2))(state.threads.state)
+      case ProcessMonitoringTab.Fibers =>
+        CeJmx.snapshotComputePoolStats(jmx.mbeanServer) match
+          case Some(poolStats) =>
+            val poolBlock = ListWidget(
+              items = Array(
+                ListWidget.Item(
+                  Text.from(
+                    Span.styled("Worker Threads: ", Bold),
+                    Span.nostyle(poolStats.workerThreadCount.toString),
+                    Span.nostyle(" total, "),
+                    Span.nostyle(poolStats.activeThreadCount.toString),
+                    Span.nostyle(" active, "),
+                    Span.nostyle(poolStats.searchingThreadCount.toString),
+                    Span.nostyle(" searching, "),
+                    Span.styled(
+                      poolStats.blockedWorkerThreadCount.toString,
+                      if poolStats.blockedWorkerThreadCount > 0 then Style.DEFAULT.fg(Color.Red)
+                      else Style.DEFAULT
+                    ),
+                    Span.nostyle(" blocked    "),
+                    Span.styled("Fibers: ", Bold),
+                    Span.nostyle(poolStats.localQueueFiberCount.toString),
+                    Span.nostyle(" queued, "),
+                    Span.nostyle(poolStats.suspendedFiberCount.toString),
+                    Span.nostyle(" suspended")
+                  )
+                )
+              )
+            )
+            f.renderWidget(poolBlock, chunks(2))
+          case None =>
+            f.renderWidget(
+              ParagraphWidget(Text.from(Span.nostyle("Cats Effect support not detected!"))),
+              chunks(2)
+            )
