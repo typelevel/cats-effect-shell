@@ -33,6 +33,7 @@
 package cats.effect.shell
 
 import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 import javax.management.{MBeanServerConnection, ObjectInstance, ObjectName}
 
@@ -43,9 +44,13 @@ object CeJmx:
       activeThreadCount: Int,
       searchingThreadCount: Int,
       blockedWorkerThreadCount: Int,
-      localQueueFiberCount: Int,
-      suspendedFiberCount: Int
+      localQueueFiberCount: Long,
+      suspendedFiberCount: Long
   )
+
+  case class FiberDump(raw: IArray[String]):
+    lazy val lines: IArray[String] =
+      IArray.unsafeFromArray(raw.unsafeArray.dropWhile(_.trim.isEmpty).flatMap(_.split("\n")))
 
   private def findMBean(mbeanServer: MBeanServerConnection, name: String): Option[ObjectInstance] =
     val namePattern = new ObjectName(name)
@@ -71,8 +76,18 @@ object CeJmx:
               attrs(1).getValue.asInstanceOf[java.lang.Integer].intValue,
               attrs(2).getValue.asInstanceOf[java.lang.Integer].intValue,
               attrs(3).getValue.asInstanceOf[java.lang.Integer].intValue,
-              attrs(4).getValue.asInstanceOf[java.lang.Long].intValue,
-              attrs(5).getValue.asInstanceOf[java.lang.Long].intValue
+              attrs(4).getValue.asInstanceOf[java.lang.Long].longValue,
+              attrs(5).getValue.asInstanceOf[java.lang.Long].longValue
             )
           )
         else None
+
+  def snapshotLiveFibers(mbeanServer: MBeanServerConnection): Option[FiberDump] =
+    findMBean(mbeanServer, "cats.effect.unsafe.metrics:type=LiveFiberSnapshotTrigger-*").flatMap:
+      fiberMBean =>
+        try
+          val result = mbeanServer
+            .invoke(fiberMBean.getObjectName(), "liveFiberSnapshot", Array.empty, Array.empty)
+            .asInstanceOf[Array[String]]
+          Some(FiberDump(IArray.unsafeFromArray(result)))
+        catch case NonFatal(_) => None

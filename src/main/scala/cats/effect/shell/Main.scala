@@ -163,12 +163,18 @@ object Main extends IOApp:
     f.renderStatefulWidget(processes, chunks(1))(state.list.state)
 
   enum ProcessMonitoringTab:
-    case Threads, Fibers
+    case Threads, Fibers, FiberDump
+
+  extension (pmt: ProcessMonitoringTab)
+    def humanized: String = pmt match
+      case ProcessMonitoringTab.FiberDump => "Fiber Dump"
+      case other                          => other.toString
 
   case class ProcessMonitoringState(
       jmx: Jmx,
       activeTab: ProcessMonitoringTab,
       threads: StatefulList[ThreadInfo],
+      fiberDump: Option[CeJmx.FiberDump],
       var lastRefresh: Long
   ):
     def possiblyRefresh(): Unit =
@@ -200,8 +206,16 @@ object Main extends IOApp:
               jmx,
               ProcessMonitoringTab.Threads,
               StatefulList.fromItems(Array.empty),
+              None,
               0L
             )
+          case _ => ()
+      else if monitoringState.activeTab == ProcessMonitoringTab.FiberDump && monitoringState.fiberDump.isEmpty
+      then
+        cnxState match
+          case ConnectionState.Connected(jmx) =>
+            monitoringState =
+              monitoringState.copy(fiberDump = CeJmx.snapshotLiveFibers(jmx.mbeanServer))
           case _ => ()
       else monitoringState.possiblyRefresh()
 
@@ -230,6 +244,12 @@ object Main extends IOApp:
                     if ordinal >= 0 && ordinal < ProcessMonitoringTab.values.length then
                       val newSelection = ProcessMonitoringTab.values(ordinal)
                       monitoringState = monitoringState.copy(activeTab = newSelection)
+                  case _ => ()
+              case char: KeyCode.Char if char.c() == 'f' =>
+                cnxState match
+                  case ConnectionState.Connected(jmx) =>
+                    monitoringState =
+                      monitoringState.copy(fiberDump = CeJmx.snapshotLiveFibers(jmx.mbeanServer))
                   case _ => ()
               case _ => ()
           case _ => ()
@@ -291,12 +311,13 @@ object Main extends IOApp:
             )
           )
         ),
-        ListWidget.Item(controlsText("d" -> "disconnect", "q" -> "quit", "f" -> "fiber dump"))
+        ListWidget.Item(controlsText("d" -> "disconnect", "q" -> "quit"))
       )
     )
     f.renderWidget(summary, chunks(0))
 
-    val titles = ProcessMonitoringTab.values.map(v => Spans.nostyle(s"${v} [${v.ordinal + 1}]"))
+    val titles =
+      ProcessMonitoringTab.values.map(v => Spans.nostyle(s"${v.humanized} [${v.ordinal + 1}]"))
     val tabs = TabsWidget(
       titles = titles,
       block = Some(BlockWidget(borders = Borders.NONE, title = Some(Spans.nostyle("")))),
@@ -353,3 +374,7 @@ object Main extends IOApp:
               ParagraphWidget(Text.from(Span.nostyle("Cats Effect support not detected!"))),
               chunks(2)
             )
+      case ProcessMonitoringTab.FiberDump =>
+        state.fiberDump.foreach: fiberDump =>
+          val text = Text(fiberDump.lines.unsafeArray.map(ln => Spans.from(Span.nostyle(ln))))
+          f.renderWidget(ParagraphWidget(text), chunks(2))
