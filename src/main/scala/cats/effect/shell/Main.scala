@@ -291,7 +291,7 @@ object Main extends IOApp:
             )
           )
         ),
-        ListWidget.Item(controlsText("d" -> "disconnect", "q" -> "quit"))
+        ListWidget.Item(controlsText("d" -> "disconnect", "q" -> "quit", "f" -> "fiber dump"))
       )
     )
     f.renderWidget(summary, chunks(0))

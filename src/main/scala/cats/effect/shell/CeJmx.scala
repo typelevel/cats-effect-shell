@@ -34,7 +34,6 @@ package cats.effect.shell
 
 import scala.jdk.CollectionConverters.*
 
-import cats.effect.IO
 import javax.management.{MBeanServerConnection, ObjectInstance, ObjectName}
 
 object CeJmx:
